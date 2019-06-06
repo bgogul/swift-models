@@ -124,7 +124,7 @@ struct Classifier: Layer {
 // setenv("SWIFT_TENSORFLOW_SERVER_ADDRESS", "grpc://localhost:51000", 0)
 // withDevice(named: "/job:localhost/replica:0/task:1/device:TPU:0") {
 // withDevice(named: "/job:localhost/replica:0/task:0/device:XLA_CPU:0") {
-withDevice(named: "/job:localhost/replica:0/task:0/device:CPU:0") {
+// withDevice(named: "/job:localhost/replica:0/task:0/device:CPU:0") {
 
 let epochCount = 1
 let batchSize = 128
@@ -170,11 +170,22 @@ for epoch in 1...epochCount {
     var trainStats = Statistics()
     var testStats = Statistics()
     Context.local.learningPhase = .training
+    let trainImagesDS = Dataset<Tensor<Float>>(elements: trainImages).batched(batchSize)
+    let trainLabelsDS = Dataset<Tensor<Int32>>(elements: trainNumericLabels).batched(batchSize)
+    var i = 0
+    for (x, y) in zip(trainImagesDS, trainLabelsDS) {
+        /// Materialize
+        // let yc = y._rawTensorHandle
+        // let xc = x._rawTensorHandle
     // for i in 0 ..< Int(trainLabels.shape[0]) / batchSize {
-    for i in 0 ..< 2 {
+        // for i in 0 ..< 5 {
+        if (i > 5) {
+            i += 1
+            break
+        }
         let start = DispatchTime.now()
-        let x = minibatch(in: trainImages, at: i)
-        let y = minibatch(in: trainNumericLabels, at: i)
+        // let x = minibatch(in: trainImages, at: i)
+        // let y = minibatch(in: trainNumericLabels, at: i)
         // Compute the gradient with respect to the model.
         let 𝛁model = classifier.gradient { classifier -> Tensor<Float> in
             let ŷ = classifier(x)
@@ -232,14 +243,14 @@ for epoch in 1...epochCount {
         "min: \(times.reduce(times[0], min)) ms,   " +
         "max: \(times.reduce(times[0], max)) ms")
 
-    if (true) {
-        let x = wallTimes["tffunction"]!
-        let y = wallTimes["execute"]!
-        var c = 0
-        for (a, b) in zip(x,y) {
-            print("\(c): \(a), \(b)")
-            c += 1
-        }
-    }
+    // if (true) {
+    //     let x = wallTimes["tffunction"]!
+    //     let y = wallTimes["execute"]!
+    //     var c = 0
+    //     for (a, b) in zip(x,y) {
+    //         print("\(c): \(a), \(b)")
+    //         c += 1
+    //     }
+    // }
 }
-} // withDevice
+// } // withDevice
