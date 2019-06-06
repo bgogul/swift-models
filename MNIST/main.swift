@@ -175,13 +175,15 @@ class Trainer {
     }
 
     func inferenceOneStep(_ x: Tensor<Float>, _ y: Tensor<Int32>) {
-        let ŷ = classifier(x)
-        let correctPredictions = ŷ.argmax(squeezingAxis: 1) .== y
-        testStats.correctGuessCount += Int(
-            Tensor<Int32>(correctPredictions).sum().scalarized())
-        testStats.totalGuessCount += batchSize
-        let loss = softmaxCrossEntropy(logits: ŷ, labels: y)
-        testStats.totalLoss += loss.scalarized()
+        withDevice(named: "/job:localhost/replica:0/task:0/device:XLA_CPU:0") {
+            let ŷ = classifier(x)
+            let correctPredictions = ŷ.argmax(squeezingAxis: 1) .== y
+            testStats.correctGuessCount += Int(
+                Tensor<Int32>(correctPredictions).sum().scalarized())
+            testStats.totalGuessCount += batchSize
+            let loss = softmaxCrossEntropy(logits: ŷ, labels: y)
+            testStats.totalLoss += loss.scalarized()
+        }
     }
 
     func printSummary(_ epoch: Int) {
@@ -220,12 +222,13 @@ class Trainer {
 // setenv("SWIFT_TENSORFLOW_SERVER_ADDRESS", "grpc://localhost:51000", 0)
 // withDevice(named: "/job:localhost/replica:0/task:1/device:TPU:0") {
 // withDevice(named: "/job:localhost/replica:0/task:0/device:XLA_CPU:0") {
-// withDevice(named: "/job:localhost/replica:0/task:0/device:CPU:0") {
 
 func minibatch<Scalar>(in x: Tensor<Scalar>, at index: Int) -> Tensor<Scalar> {
     let start = index * batchSize
     return x[start..<start+batchSize]
 }
+
+withDevice(named: "/job:localhost/replica:0/task:0/device:CPU:0") {
 
 let (trainImages, trainNumericLabels) = readMNIST(imagesFile: "train-images-idx3-ubyte",
                                                   labelsFile: "train-labels-idx1-ubyte")
@@ -265,3 +268,4 @@ for epoch in 1...epochCount {
     }
     trainer.printSummary(epoch)
 }
+} // withDevice
