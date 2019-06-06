@@ -121,13 +121,106 @@ struct Classifier: Layer {
     }
 }
 
+struct Statistics {
+    var correctGuessCount: Int = 0
+    var totalGuessCount: Int = 0
+    var totalLoss: Float = 0
+}
+
+let epochCount = 1
+let batchSize = 128
+var times = [Double]()
+let executions = wallTimes["execute"]!.count - 0
+var tfeExecutes = executions
+
+class Trainer {
+    var classifier: Classifier
+    let optimizer: Adam<Classifier>
+    var trainStats: Statistics
+    var testStats: Statistics
+
+    init() {
+        self.classifier = Classifier()
+        self.optimizer = Adam(for: classifier)
+        self.trainStats = Statistics()
+        self.testStats = Statistics()
+    }
+
+    func trainOneStep(_ epoch: Int, _ step: Int, _ x: Tensor<Float>, _ y: Tensor<Int32>) {
+        withDevice(named: "/job:localhost/replica:0/task:0/device:XLA_CPU:0") {
+            let start = DispatchTime.now()
+            // let x = minibatch(in: trainImages, at: i)
+            // let y = minibatch(in: trainNumericLabels, at: i)
+            // Compute the gradient with respect to the model.
+            let 𝛁model = classifier.gradient { classifier -> Tensor<Float> in
+                let ŷ = classifier(x)
+                let correctPredictions = ŷ.argmax(squeezingAxis: 1) .== y
+                trainStats.correctGuessCount += Int(
+                    Tensor<Int32>(correctPredictions).sum().scalarized())
+                trainStats.totalGuessCount += batchSize
+                let loss = softmaxCrossEntropy(logits: ŷ, labels: y)
+                trainStats.totalLoss += loss.scalarized()
+                return loss
+            }
+            // Update the model's differentiable variables along the gradient vector.
+            optimizer.update(&classifier.allDifferentiableVariables, along: 𝛁model)
+            let end = DispatchTime.now()
+            let nanoseconds = Double(end.uptimeNanoseconds - start.uptimeNanoseconds)
+            let milliseconds = nanoseconds / 1e6
+            times.append(milliseconds)
+            let executions = wallTimes["execute"]!.count - tfeExecutes
+            tfeExecutes = wallTimes["execute"]!.count
+            print("Epoch: \(epoch) Step: \(step) Time: \(milliseconds) ms Executions: \(executions) ")
+        }
+    }
+
+    func inferenceOneStep(_ x: Tensor<Float>, _ y: Tensor<Int32>) {
+        let ŷ = classifier(x)
+        let correctPredictions = ŷ.argmax(squeezingAxis: 1) .== y
+        testStats.correctGuessCount += Int(
+            Tensor<Int32>(correctPredictions).sum().scalarized())
+        testStats.totalGuessCount += batchSize
+        let loss = softmaxCrossEntropy(logits: ŷ, labels: y)
+        testStats.totalLoss += loss.scalarized()
+    }
+
+    func printSummary(_ epoch: Int) {
+        let trainAccuracy = Float(trainStats.correctGuessCount) / Float(trainStats.totalGuessCount)
+        let testAccuracy = Float(testStats.correctGuessCount) / Float(testStats.totalGuessCount)
+        print("""
+            [Epoch \(epoch)] \
+            Training Loss: \(trainStats.totalLoss), \
+            Training Accuracy: \(trainStats.correctGuessCount)/\(trainStats.totalGuessCount) \
+            (\(trainAccuracy)), \
+            Test Loss: \(testStats.totalLoss), \
+            Test Accuracy: \(testStats.correctGuessCount)/\(testStats.totalGuessCount) \
+            (\(testAccuracy))
+            """)
+        for (what, times) in wallTimes {
+            if times.count == 0 { continue }
+            print("\(what) events: \(times.count) average: \(times.reduce(0.0, +)/Double(times.count)) ms, sum: \(times.reduce(times[0], +)), " +
+                "min: \(times.reduce(times[0], min)) ms,   " +
+                "max: \(times.reduce(times[0], max)) ms")
+        }
+        print("step events: \(times.count) average: \(times.reduce(0.0, +)/Double(times.count)) ms, sum: \(times.reduce(times[0], +)) " +
+            "min: \(times.reduce(times[0], min)) ms,   " +
+            "max: \(times.reduce(times[0], max)) ms")
+        // if (true) {
+        //     let x = wallTimes["tffunction"]!
+        //     let y = wallTimes["execute"]!
+        //     var c = 0
+        //     for (a, b) in zip(x,y) {
+        //         print("\(c): \(a), \(b)")
+        //         c += 1
+        //     }
+        // }
+    }
+}
+
 // setenv("SWIFT_TENSORFLOW_SERVER_ADDRESS", "grpc://localhost:51000", 0)
 // withDevice(named: "/job:localhost/replica:0/task:1/device:TPU:0") {
 // withDevice(named: "/job:localhost/replica:0/task:0/device:XLA_CPU:0") {
 // withDevice(named: "/job:localhost/replica:0/task:0/device:CPU:0") {
-
-let epochCount = 1
-let batchSize = 128
 
 func minibatch<Scalar>(in x: Tensor<Scalar>, at index: Int) -> Tensor<Scalar> {
     let start = index * batchSize
@@ -142,115 +235,33 @@ let (testImages, testNumericLabels) = readMNIST(imagesFile: "t10k-images-idx3-ub
                                                 labelsFile: "t10k-labels-idx1-ubyte")
 let testLabels = Tensor<Float>(oneHotAtIndices: testNumericLabels, depth: 10)
 
-var classifier = Classifier()
-
-let optimizer = Adam(for: classifier)
-
+var trainer = Trainer()
+print ("Executions before loop: \(executions)")
 print("Beginning training...")
-
-// struct Statistics {
-//     var correctGuessCount: Tensor<Int32> = Tensor<Int32>(0)
-//     var totalGuessCount: Tensor<Int32> = Tensor<Int32>(0)
-//     var totalLoss: Tensor<Float> = Tensor<Float>(0.0)
-// }
-struct Statistics {
-    var correctGuessCount: Int = 0
-    var totalGuessCount: Int = 0
-    var totalLoss: Float = 0
-}
-
-
-var times = [Double]()
-let executions = wallTimes["execute"]!.count - 0
-print ("Executions beforels loop: \(executions)")
-var tfeExecutes = executions
-
 // The training loop.
 for epoch in 1...epochCount {
-    var trainStats = Statistics()
-    var testStats = Statistics()
     Context.local.learningPhase = .training
     let trainImagesDS = Dataset<Tensor<Float>>(elements: trainImages).batched(batchSize)
     let trainLabelsDS = Dataset<Tensor<Int32>>(elements: trainNumericLabels).batched(batchSize)
     var i = 0
     for (x, y) in zip(trainImagesDS, trainLabelsDS) {
-        /// Materialize
-        // let yc = y._rawTensorHandle
-        // let xc = x._rawTensorHandle
-    // for i in 0 ..< Int(trainLabels.shape[0]) / batchSize {
-        // for i in 0 ..< 5 {
+        // Force materialization
+        let  _ = y._rawTensorHandle
+        let  _ = x._rawTensorHandle
+        trainer.trainOneStep(epoch, i, x, y)
+        i += 1
         if (i > 5) {
-            i += 1
             break
         }
-        let start = DispatchTime.now()
-        // let x = minibatch(in: trainImages, at: i)
-        // let y = minibatch(in: trainNumericLabels, at: i)
-        // Compute the gradient with respect to the model.
-        let 𝛁model = classifier.gradient { classifier -> Tensor<Float> in
-            let ŷ = classifier(x)
-            let correctPredictions = ŷ.argmax(squeezingAxis: 1) .== y
-            trainStats.correctGuessCount += Int(
-                Tensor<Int32>(correctPredictions).sum().scalarized())
-            trainStats.totalGuessCount += batchSize
-            let loss = softmaxCrossEntropy(logits: ŷ, labels: y)
-            trainStats.totalLoss += loss.scalarized()
-            return loss
-        }
-        // Update the model's differentiable variables along the gradient vector.
-        optimizer.update(&classifier.allDifferentiableVariables, along: 𝛁model)
-        let end = DispatchTime.now()
-        let nanoseconds = Double(end.uptimeNanoseconds - start.uptimeNanoseconds)
-        let milliseconds = nanoseconds / 1e6
-        times.append(milliseconds)
-        let executions = wallTimes["execute"]!.count - tfeExecutes
-        tfeExecutes = wallTimes["execute"]!.count
-        print("Epoch: \(epoch) Step: \(i) Time: \(milliseconds) ms Executions: \(executions) ")
     }
-
+    let testImagesDS = Dataset<Tensor<Float>>(elements: testImages).batched(batchSize)
+    let testLabelsDS = Dataset<Tensor<Int32>>(elements: testNumericLabels).batched(batchSize)
     Context.local.learningPhase = .inference
-    for i in 0 ..< Int(testLabels.shape[0]) / batchSize {
-        let x = minibatch(in: testImages, at: i)
-        let y = minibatch(in: testNumericLabels, at: i)
-        // Compute loss on test set
-        let ŷ = classifier(x)
-        let correctPredictions = ŷ.argmax(squeezingAxis: 1) .== y
-        testStats.correctGuessCount += Int(
-            Tensor<Int32>(correctPredictions).sum().scalarized())
-        testStats.totalGuessCount += batchSize
-        let loss = softmaxCrossEntropy(logits: ŷ, labels: y)
-        testStats.totalLoss += loss.scalarized()
+    for (x, y) in zip(testImagesDS, testLabelsDS) {
+        // Force materialization
+        let  _ = y._rawTensorHandle
+        let  _ = x._rawTensorHandle
+        trainer.inferenceOneStep(x, y)
     }
-
-    let trainAccuracy = Float(trainStats.correctGuessCount) / Float(trainStats.totalGuessCount)
-    let testAccuracy = Float(testStats.correctGuessCount) / Float(testStats.totalGuessCount)
-    print("""
-          [Epoch \(epoch)] \
-          Training Loss: \(trainStats.totalLoss), \
-          Training Accuracy: \(trainStats.correctGuessCount)/\(trainStats.totalGuessCount) \ 
-          (\(trainAccuracy)), \
-          Test Loss: \(testStats.totalLoss), \
-          Test Accuracy: \(testStats.correctGuessCount)/\(testStats.totalGuessCount) \
-          (\(testAccuracy))
-        """)
-    for (what, times) in wallTimes {
-        if times.count == 0 { continue }
-        print("\(what) events: \(times.count) average: \(times.reduce(0.0, +)/Double(times.count)) ms, sum: \(times.reduce(times[0], +)), " +
-            "min: \(times.reduce(times[0], min)) ms,   " +
-            "max: \(times.reduce(times[0], max)) ms")
-    }
-    print("step events: \(times.count) average: \(times.reduce(0.0, +)/Double(times.count)) ms, sum: \(times.reduce(times[0], +)) " +
-        "min: \(times.reduce(times[0], min)) ms,   " +
-        "max: \(times.reduce(times[0], max)) ms")
-
-    // if (true) {
-    //     let x = wallTimes["tffunction"]!
-    //     let y = wallTimes["execute"]!
-    //     var c = 0
-    //     for (a, b) in zip(x,y) {
-    //         print("\(c): \(a), \(b)")
-    //         c += 1
-    //     }
-    // }
+    trainer.printSummary(epoch)
 }
-// } // withDevice
