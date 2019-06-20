@@ -35,6 +35,26 @@ func downloadCIFAR10IfNotPresent(to directory: String = ".") {
 struct Example: TensorGroup {
     var label: Tensor<Int32>
     var data: Tensor<Float>
+
+    public init(label: Tensor<Int32>, data: Tensor<Float>) {
+        self.label = label
+        self.data = data
+    }
+
+    public var  _tensorHandles: [_AnyTensorHandle] {
+        label._tensorHandles + data._tensorHandles
+    }
+
+    public init<C: RandomAccessCollection>(
+        _handles: C
+    ) where C.Element: _AnyTensorHandle {
+        let firstStart = _handles.startIndex
+        let firstEnd = _handles.index(
+            firstStart, offsetBy: Int(Tensor<Int32>._tensorHandleCount))
+        self.label = Tensor<Int32>(_handles: _handles[firstStart..<firstEnd])
+        self.data = Tensor<Float>(_handles: _handles[firstEnd..<_handles.endIndex])
+    }
+
 }
 
 // Each CIFAR data file is provided as a Python pickle of NumPy arrays
